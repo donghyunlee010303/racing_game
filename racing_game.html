@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>레이싱 게임</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        h1 {
+            color: #ff4444;
+            margin-bottom: 10px;
+        }
+        
+        #gameCanvas {
+            border: 2px solid #333;
+            background-color: #000;
+            margin: 10px 0;
+        }
+        
+        .controls {
+            text-align: center;
+            margin-top: 10px;
+        }
+        
+        .controls p {
+            margin: 5px 0;
+            color: #ccc;
+        }
+        
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+        }
+        
+        .game-over h2 {
+            color: #ff4444;
+            margin: 0 0 10px 0;
+        }
+        
+        .game-over p {
+            margin: 5px 0;
+            color: #ccc;
+        }
+    </style>
+</head>
+<body>
+    <h1>🏎️ 레이싱 게임</h1>
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+    
+    <div class="controls">
+        <p><strong>조작법:</strong></p>
+        <p>← → 방향키: 차량 좌우 이동</p>
+        <p>Enter: 게임 재시작</p>
+        <p>ESC: 게임 종료</p>
+    </div>
+    
+    <div class="game-over" id="gameOver">
+        <h2>충돌!</h2>
+        <p>Enter를 눌러 다시 시작하세요</p>
+    </div>
+
+    <script>
+        // 게임 설정
+        const GameConfig = {
+            width: 400,
+            height: 600,
+            laneCount: 3,
+            borderX: 60,
+            laneMarkerLength: 48,
+            laneMarkerGap: 80,
+            fps: 60
+        };
+
+        // 색상 정의
+        const colors = {
+            road: '#3c3c3c',
+            grass: '#228b22',
+            laneMarker: '#ffffff',
+            playerCar: '#ff0000',
+            enemyCar: '#0064ff',
+            text: '#ffffff',
+            background: '#000000'
+        };
+
+        // Car 클래스
+        class Car {
+            constructor(x, y, width, height, color) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.color = color;
+                this.rect = {
+                    x: x - width / 2,
+                    y: y - height / 2,
+                    width: width,
+                    height: height
+                };
+            }
+
+            update(dx, dy = 0) {
+                this.x += dx;
+                this.y += dy;
+                this.rect.x = this.x - this.width / 2;
+                this.rect.y = this.y - this.height / 2;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.rect.x, this.rect.y, this.rect.width, this.rect.height);
+            }
+        }
+
+        // RacingGame 클래스
+        class RacingGame {
+            constructor() {
+                this.canvas = document.getElementById('gameCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                this.gameOverDiv = document.getElementById('gameOver');
+                
+                // 트랙 설정
+                this.trackLeft = GameConfig.borderX;
+                this.trackRight = GameConfig.width - GameConfig.borderX;
+                this.laneWidth = (this.trackRight - this.trackLeft) / GameConfig.laneCount;
+                
+                // 게임 변수
+                this.carSpeed = 5;
+                this.roadScrollSpeed = 3;
+                this.obstacleSpeed = 3;
+                this.spawnCooldownRange = [60, 120];
+                
+                // 플레이어 차량
+                const carWidth = Math.floor(this.laneWidth * 0.6);
+                const carHeight = 40;
+                const carX = this.laneCenter(1);
+                const carY = GameConfig.height - 80;
+                this.playerCar = new Car(carX, carY, carWidth, carHeight, colors.playerCar);
+                
+                // 장애물과 차선 마커
+                this.obstacles = [];
+                this.laneMarkers = [];
+                
+                // 게임 상태
+                this.score = 0;
+                this.spawnTimer = this.nextSpawnDelay();
+                this.running = true;
+                this.gameOver = false;
+                
+                // 키 상태
+                this.keys = {
+                    left: false,
+                    right: false
+                };
+                
+                // 차선 마커 초기화
+                this.initLaneMarkers();
+                
+                // 이벤트 리스너 설정
+                this.setupEventListeners();
+                
+                // 게임 루프 시작
+                this.gameLoop();
+            }
+
+            initLaneMarkers() {
+                for (let lane = 1; lane < GameConfig.laneCount; lane++) {
+                    const x = Math.floor(this.trackLeft + lane * this.laneWidth);
+                    for (let y = -GameConfig.laneMarkerLength; 
+                         y < GameConfig.height + GameConfig.laneMarkerLength; 
+                         y += GameConfig.laneMarkerLength + GameConfig.laneMarkerGap) {
+                        this.laneMarkers.push({x, y});
+                    }
+                }
+            }
+
+            setupEventListeners() {
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowLeft') {
+                        this.keys.left = true;
+                    } else if (e.key === 'ArrowRight') {
+                        this.keys.right = true;
+                    } else if (e.key === 'Enter' && this.gameOver) {
+                        this.resetGame();
+                    } else if (e.key === 'Escape') {
+                        this.running = false;
+                    }
+                });
+
+                document.addEventListener('keyup', (e) => {
+                    if (e.key === 'ArrowLeft') {
+                        this.keys.left = false;
+                    } else if (e.key === 'ArrowRight') {
+                        this.keys.right = false;
+                    }
+                });
+            }
+
+            update() {
+                if (!this.gameOver) {
+                    this.updateCar();
+                    this.updateLaneMarkers();
+                    this.updateObstacles();
+                    this.maybeSpawnObstacle();
+                    this.updateScore();
+                }
+            }
+
+            updateCar() {
+                let dx = 0;
+                if (this.keys.left && !this.keys.right) {
+                    dx = -this.carSpeed;
+                } else if (this.keys.right && !this.keys.left) {
+                    dx = this.carSpeed;
+                }
+
+                if (dx) {
+                    const newX = this.playerCar.x + dx;
+                    if (newX - this.playerCar.width / 2 >= this.trackLeft && 
+                        newX + this.playerCar.width / 2 <= this.trackRight) {
+                        this.playerCar.update(dx);
+                    }
+                }
+            }
+
+            updateLaneMarkers() {
+                for (let i = 0; i < this.laneMarkers.length; i++) {
+                    this.laneMarkers[i].y += this.roadScrollSpeed;
+                    if (this.laneMarkers[i].y > GameConfig.height) {
+                        this.laneMarkers[i].y = -GameConfig.laneMarkerLength;
+                    }
+                }
+            }
+
+            updateObstacles() {
+                const obstaclesToRemove = [];
+                
+                for (let obstacle of this.obstacles) {
+                    obstacle.update(0, this.obstacleSpeed);
+                    
+                    if (obstacle.y > GameConfig.height) {
+                        obstaclesToRemove.push(obstacle);
+                        continue;
+                    }
+                    
+                    if (this.checkCollision(obstacle)) {
+                        this.gameOverFunc();
+                        return;
+                    }
+                }
+                
+                for (let obstacle of obstaclesToRemove) {
+                    const index = this.obstacles.indexOf(obstacle);
+                    if (index > -1) {
+                        this.obstacles.splice(index, 1);
+                    }
+                }
+            }
+
+            maybeSpawnObstacle() {
+                this.spawnTimer--;
+                if (this.spawnTimer <= 0) {
+                    const lane = Math.floor(Math.random() * GameConfig.laneCount);
+                    const width = Math.floor(this.laneWidth * 0.6);
+                    const height = 50;
+                    const x = this.laneCenter(lane);
+                    const y = -height;
+                    
+                    const obstacle = new Car(x, y, width, height, colors.enemyCar);
+                    this.obstacles.push(obstacle);
+                    this.spawnTimer = this.nextSpawnDelay();
+                }
+            }
+
+            updateScore() {
+                this.score += 1 / GameConfig.fps;
+            }
+
+            draw() {
+                // 배경 그리기
+                this.ctx.fillStyle = colors.background;
+                this.ctx.fillRect(0, 0, GameConfig.width, GameConfig.height);
+                
+                // 잔디 지역 그리기
+                this.ctx.fillStyle = colors.grass;
+                this.ctx.fillRect(0, 0, this.trackLeft, GameConfig.height);
+                this.ctx.fillRect(this.trackRight, 0, GameConfig.width - this.trackRight, GameConfig.height);
+                
+                // 도로 그리기
+                this.ctx.fillStyle = colors.road;
+                this.ctx.fillRect(this.trackLeft, 0, this.trackRight - this.trackLeft, GameConfig.height);
+                
+                // 차선 마커 그리기
+                this.ctx.fillStyle = colors.laneMarker;
+                for (let marker of this.laneMarkers) {
+                    this.ctx.fillRect(marker.x - 3, marker.y, 6, GameConfig.laneMarkerLength);
+                }
+                
+                // 장애물 그리기
+                for (let obstacle of this.obstacles) {
+                    obstacle.draw(this.ctx);
+                }
+                
+                // 플레이어 차량 그리기
+                this.playerCar.draw(this.ctx);
+                
+                // 점수 표시
+                this.ctx.fillStyle = colors.text;
+                this.ctx.font = '16px Arial';
+                this.ctx.fillText(`Score: ${this.score.toFixed(1)}`, 10, 25);
+                
+                // 게임 오버 메시지
+                if (this.gameOver) {
+                    this.gameOverDiv.style.display = 'block';
+                } else {
+                    this.gameOverDiv.style.display = 'none';
+                }
+            }
+
+            // Helper methods
+            laneCenter(lane) {
+                return this.trackLeft + this.laneWidth * (lane + 0.5);
+            }
+
+            nextSpawnDelay() {
+                return Math.floor(Math.random() * (this.spawnCooldownRange[1] - this.spawnCooldownRange[0] + 1)) + this.spawnCooldownRange[0];
+            }
+
+            checkCollision(obstacle) {
+                return this.playerCar.rect.x < obstacle.rect.x + obstacle.rect.width &&
+                       this.playerCar.rect.x + this.playerCar.rect.width > obstacle.rect.x &&
+                       this.playerCar.rect.y < obstacle.rect.y + obstacle.rect.height &&
+                       this.playerCar.rect.y + this.playerCar.rect.height > obstacle.rect.y;
+            }
+
+            gameOverFunc() {
+                this.gameOver = true;
+            }
+
+            resetGame() {
+                this.gameOver = false;
+                this.obstacles = [];
+                this.score = 0;
+                this.spawnTimer = this.nextSpawnDelay();
+                
+                // 플레이어 차량을 중앙으로 리셋
+                const carX = this.laneCenter(1);
+                const carY = GameConfig.height - 80;
+                this.playerCar.x = carX;
+                this.playerCar.y = carY;
+                this.playerCar.rect.x = carX - this.playerCar.width / 2;
+                this.playerCar.rect.y = carY - this.playerCar.height / 2;
+            }
+
+            gameLoop() {
+                if (this.running) {
+                    this.update();
+                    this.draw();
+                    setTimeout(() => this.gameLoop(), 1000 / GameConfig.fps);
+                }
+            }
+        }
+
+        // 게임 시작
+        window.addEventListener('load', () => {
+            new RacingGame();
+        });
+    </script>
+</body>
+</html>
